@@ -1,0 +1,178 @@
+﻿#include "blockchain_framework.csp";
+
+#define INITIAL_VALUE 0;
+#define ITEM_PRICE_VALUE 5;
+
+enum {CONTRACT_ADDRESS, SELLER_ADDRESS, BUYER_ADDRESS};
+enum {NULL_STATE, CREATED_STATE, LOCKED_STATE, RELEASE_STATE, INACTIVE_STATE};
+
+channel constructor 0;
+
+var contract = CONTRACT_ADDRESS;
+var seller = SELLER_ADDRESS;
+var buyer = BUYER_ADDRESS;
+var state = NULL_STATE;
+var value = INITIAL_VALUE;
+
+
+#alphabet Constructor {smart_contract_initialized};
+Constructor() = 
+	constructor?msg_sender.msg_value -> 	
+	ifa (msg_value % 2 == 0) {
+		seller_set_to.msg_sender{seller = msg_sender;} -> 
+		value_as_item_price_set_to_half_of_guaranty.msg_value{value = msg_value / 2;} -> 
+		state_transitioned_to_created{state = CREATED_STATE;} -> 
+		smart_contract_initialized -> 
+		release!EXIT_CODE_SUCCESS -> 
+		Purchase()
+	} else {
+		odd_msg_value_exception.msg_value -> 
+		release!EXIT_CODE_ERROR -> 
+		Constructor()
+	};
+
+#alphabet Abort {aborted};
+Abort() = 
+	abort?msg_sender.msg_value -> 
+	ifa (msg_sender == seller) {
+		ifa (state == CREATED_STATE) {
+			state_transitioned_to_inactive{state = INACTIVE_STATE;} -> 
+			contract_balance_transferred_to_seller.balances[contract].seller{
+				balances[seller] = balances[seller] + balances[contract];
+				balances[contract] = 0;
+			} -> 
+			aborted -> 
+			release!EXIT_CODE_SUCCESS -> 
+			Skip
+		} else {
+			non_created_state_exception.state -> 
+			release!EXIT_CODE_ERROR -> 
+			Skip
+		}
+	} else {
+		non_seller_exception.msg_sender -> 
+		release!EXIT_CODE_ERROR -> 
+		Skip
+	};
+
+#alphabet ConfirmPurchased {purchase_confirmed};
+ConfirmPurchased() = 
+	confirm_purchased?msg_sender.msg_value -> 
+	ifa (state == CREATED_STATE) {
+		ifa (msg_value == 2 * value) {
+			state_transitioned_to_locked{state = LOCKED_STATE;} -> 
+			contract_balance_added_with_deposit_of.msg_value{
+				balances[contract] = balances[contract] + msg_value;
+				if (msg_sender == BUYER_ADDRESS) {
+					balances[buyer] = balances[buyer] - msg_value;
+				} else {
+					balances[seller] = balances[seller] - msg_value;
+				}
+			} -> 
+			buyer_set_to.msg_sender{buyer = msg_sender;} -> 
+			purchase_confirmed ->
+			release!EXIT_CODE_SUCCESS -> 
+			Skip
+		} else {
+			non_matching_msg_value_exception.msg_value -> 
+			release!EXIT_CODE_ERROR -> 
+			Skip
+		}
+	} else {
+		non_created_state_exception.state -> 
+		release!EXIT_CODE_ERROR -> 
+		Skip
+	};
+
+#alphabet ConfirmReceived {item_received};
+ConfirmReceived() = 
+	confirm_received?msg_sender.msg_value -> 
+	ifa (msg_sender == buyer) {
+		if (state == LOCKED_STATE) {
+			state_transitioned_to_release{state = RELEASE_STATE;} -> 
+			half_of_deposit_returned_to_buyer.value.msg_sender{
+				balances[contract] = balances[contract] - value;
+				if (msg_sender == BUYER_ADDRESS) {
+					balances[buyer] = balances[buyer] + value;
+				} else {
+					balances[seller] = balances[seller] + value;
+				}
+			} -> 
+			contract_balance_transferred_to_seller.balances[contract].seller{
+				balances[seller] = balances[seller] + balances[contract];
+				balances[contract] = 0;
+			} -> 
+			item_received -> 
+			release!EXIT_CODE_SUCCESS -> 
+			Skip
+		} else {
+			non_locked_state_exception.state -> 
+			release!EXIT_CODE_ERROR -> 
+			Skip
+		}
+	} else {
+		non_buyer_exception.msg_sender -> 
+		release!EXIT_CODE_ERROR -> 
+		Skip
+	};
+
+//Purchase() = (Abort() [] ConfirmPurchased() [] ConfirmReceived()); Purchase();
+
+//Purchase() = (Abort() ||| ConfirmPurchased() ||| ConfirmReceived()); Purchase();
+
+AbortR() = Abort(); AbortR();
+
+ConfirmPurchasedR() = ConfirmPurchased(); ConfirmPurchasedR();
+
+ConfirmReceivedR() = ConfirmReceived(); ConfirmReceivedR();
+
+Purchase() = AbortR() ||| ConfirmPurchasedR() ||| ConfirmReceivedR();
+
+Deployer(address, guaranty_ether_value) = 
+	constructor!address.guaranty_ether_value -> 
+	release?exit_code -> 
+	ifa (exit_code == EXIT_CODE_SUCCESS) {
+		Skip
+	} else {
+		Deployer(address, guaranty_ether_value + 1)
+	};
+
+Seller(address) = 
+	abort_invocation!address.0 -> 
+	Seller(address);
+
+Buyer(address, deposit_ether_value) = 
+	confirm_purchased_invocation!address.deposit_ether_value -> 
+	Buyer(address, deposit_ether_value) 
+	[]
+	confirm_received_invocation!address.0 -> 
+	Buyer(address, deposit_ether_value);
+
+BlockchainSystem() = 
+	Constructor() ||
+	(
+		Deployer(SELLER_ADDRESS, ITEM_PRICE_VALUE * 2 - 1); 
+		(
+			(
+				Seller(SELLER_ADDRESS) ||| 
+				Buyer(SELLER_ADDRESS, ITEM_PRICE_VALUE * 2)
+			) |||
+			(
+				Buyer(BUYER_ADDRESS, ITEM_PRICE_VALUE * 2) ||| 
+				Seller(BUYER_ADDRESS)
+			)
+		)
+	) || BlockchainNetwork();
+
+
+#define buyer_balance_remains_unchanged (balances[buyer] == INITIAL_BALANCE);
+#define seller_balance_remains_unchanged (balances[seller] == INITIAL_BALANCE);
+#define buyer_balance_deducted_by_item_price_value (balances[buyer] == INITIAL_BALANCE - ITEM_PRICE_VALUE);
+#define seller_balance_added_by_item_price_value (balances[seller] == INITIAL_BALANCE + ITEM_PRICE_VALUE);
+#define buyer_is_BUYER_ADDRESS (buyer == BUYER_ADDRESS);
+#define buyer_is_SELLER_ADDRESS (buyer == SELLER_ADDRESS);
+
+#assert BlockchainSystem() |= [] (aborted -> <> (buyer_balance_remains_unchanged && seller_balance_remains_unchanged));
+#assert BlockchainSystem() |= [] (item_received && buyer_is_BUYER_ADDRESS -> <> (buyer_balance_deducted_by_item_price_value && seller_balance_added_by_item_price_value));
+#assert BlockchainSystem() |= [] (item_received && buyer_is_SELLER_ADDRESS -> <> (buyer_balance_remains_unchanged && seller_balance_remains_unchanged));
+#assert BlockchainSystem() reaches non_constant_balances;

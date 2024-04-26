@@ -1,0 +1,80 @@
+﻿//@@Counter_Smart_Contract@@
+
+#include "blockchain_framework_counter_smart_contract.csp";
+
+#define INITIAL_VALUE 0;
+#define INITIAL_ETHER_AMOUNT 10;
+
+enum {CONTRACT_ADDRESS, ALICE_ADDRESS, BOB_ADDRESS};
+
+channel constructor 0;
+
+var id;
+var count = INITIAL_VALUE;
+var old_count = INITIAL_VALUE;
+var return_values = [INITIAL_VALUE, INITIAL_VALUE, INITIAL_VALUE];
+
+
+Constructor() = 
+	constructor?msg_sender.msg_value -> 
+	ether_amount_transferred_from.msg_value.msg_sender{
+		balances[msg_sender] = balances[msg_sender] - msg_value;
+		balances[CONTRACT_ADDRESS] =  msg_value;
+	} -> 
+	id_set_to.msg_sender{id = msg_sender;} -> 
+	count_set_to.msg_value{count = msg_value;} -> 
+	smart_contract_initialized -> 
+	release!EXIT_CODE_SUCCESS -> 
+	GetOrSet();
+
+Get() = 
+	get?msg_sender.msg_value -> 
+	get_count_of.count{return_values[msg_sender] = count;} -> 
+	release!EXIT_CODE_SUCCESS -> 
+	Get();
+
+Set() = 
+	set?msg_sender.msg_value -> 
+	ether_amount_transferred_from.msg_value.msg_sender{
+		balances[msg_sender] = balances[msg_sender] - msg_value;
+		balances[CONTRACT_ADDRESS] = balances[CONTRACT_ADDRESS] + msg_value;
+	} -> 
+	set_count_to.msg_value{
+		old_count = count;
+		count = msg_value;
+	} ->  
+	old_count_transferred_to_address.old_count.msg_sender{
+		balances[CONTRACT_ADDRESS] = balances[CONTRACT_ADDRESS] - old_count;
+		balances[msg_sender] = balances[msg_sender] + old_count;
+	} -> 
+	get_old_count_of.old_count{return_values[msg_sender] = old_count;} -> 
+	release!EXIT_CODE_SUCCESS -> 
+	Set();
+
+GetOrSet() = Get() ||| Set();
+
+Deployer(address, initial_ether_amount) = 
+	constructor!address.initial_ether_amount -> 
+	release?exit_code -> 
+	Skip;
+
+Increment(initiator_address, amount) = 
+	get_invocation!initiator_address.0 -> 
+	set_invocation!initiator_address.(return_values[initiator_address] + amount) -> 
+	Skip;
+
+BlockchainSystem() = 
+	Constructor() ||  
+	(
+		Deployer(ALICE_ADDRESS, INITIAL_ETHER_AMOUNT); 
+		(
+			Increment(ALICE_ADDRESS, 2) ||| 
+			Increment(BOB_ADDRESS, 3)
+		)
+	) || BlockchainNetwork();
+
+
+#define count_is_consistent (count == INITIAL_ETHER_AMOUNT + 2 + 3);
+
+#assert BlockchainSystem() reaches non_constant_balances;
+#assert BlockchainSystem() |= [] <> count_is_consistent;

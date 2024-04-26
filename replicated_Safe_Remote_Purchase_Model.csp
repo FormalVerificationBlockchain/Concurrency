@@ -1,0 +1,100 @@
+﻿enum {CONTRACT, SELLER, BUYER};
+enum {NULL, CREATED, LOCKED, RELEASE, INACTIVE};
+
+channel constructor 1;
+channel buyer 1;
+channel access 1;
+
+var guaranty = -1;
+var state = NULL;
+
+
+Constructor() = 
+	constructor?msg_value -> 
+	ifa (msg_value % 2 == 0) {
+		seller_guaranty_eth_msg_value{guaranty = msg_value;} -> 
+		state_created{state = CREATED;} -> 
+		Purchase()
+	} else {
+		warning -> 
+		Skip
+	};
+
+Abort() = 
+	access?object -> 
+	ifa (object == SELLER) {
+		ifa(state == CREATED) {
+			abort -> 
+			state_aborted{state = INACTIVE;} -> 
+			eth_balance_seller_overall -> 
+			Skip
+		} else {
+			warning -> 
+			Skip
+		}
+	} else {
+		warning -> 
+		Skip
+	};
+
+ConfirmPurchased() = 
+	access?object -> 
+	ifa (object == BUYER) {
+		ifa (state == CREATED) {
+			buyer?deposit -> 
+			ifa (deposit == guaranty) {
+				purchase_confirmed -> 
+				state_locked{state = LOCKED;} -> 
+				Skip
+			} else {
+				warning -> 
+				Skip
+			}
+		} else {
+			warning -> 
+			Skip
+		}
+	} else {
+		warning -> 
+		Skip
+	};
+
+ConfirmReceived() = 
+	access?object -> 
+	ifa (object == BUYER) {
+		ifa (state == LOCKED) {
+			item_received -> 
+			state_inactive{state = RELEASE;} -> 
+			Skip
+		} else {
+			warning -> 
+			Skip
+		}
+	} else {
+		warning -> 
+		Skip
+	};
+
+Purchase() = Abort() ||| ConfirmPurchased() ||| ConfirmReceived();
+
+//Purchase() = 
+//	Abort(); ConfirmPurchased(); ConfirmReceived() [] 
+//	Abort(); ConfirmReceived(); ConfirmPurchased() [] 
+//	ConfirmPurchased(); Abort(); ConfirmReceived() [] 
+//	ConfirmPurchased(); ConfirmReceived(); Abort() [] 
+//	ConfirmReceived(); Abort(); ConfirmPurchased() [] 
+//	ConfirmReceived(); ConfirmPurchased(); Abort();
+
+//Purchase() = 
+//	(Abort() [] ConfirmPurchased() [] ConfirmReceived()); Purchase();
+
+Deployer(guaranty_value) = constructor!guaranty_value -> Skip;
+
+Seller() = access!SELLER -> Skip;
+
+Buyer(deposit_value) = access!BUYER -> buyer!deposit_value -> access!BUYER -> Skip;
+
+BlockchainSystem() = 
+	Constructor() || (Deployer(10); (Seller() ||| Buyer(10)));
+
+#assert BlockchainSystem() |= [] (purchase_confirmed -> !<> abort);

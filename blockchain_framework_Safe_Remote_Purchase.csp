@@ -1,0 +1,53 @@
+﻿#define N 3;
+#define INITIAL_BALANCE 100;
+#define EXIT_CODE_SUCCESS 0;
+#define EXIT_CODE_ERROR 1;
+
+var balances = [0, INITIAL_BALANCE, INITIAL_BALANCE];
+hvar counter = 0;
+
+channel abort_invocation 0;
+channel abort 0;
+channel confirm_purchased_invocation 0;
+channel confirm_purchased 0;
+channel confirm_received_invocation 0;
+channel confirm_received 0;
+channel release 0;
+
+AbortExecutor() = 
+   abort_invocation?msg_sender.msg_value -> 
+   abort!msg_sender.msg_value -> 
+   release?exit_code -> 
+   Skip;
+
+ConfirmPurchasedExecutor() = 
+   confirm_purchased_invocation?msg_sender.msg_value -> 
+   confirm_purchased!msg_sender.msg_value -> 
+   release?exit_code -> 
+   Skip;
+
+ConfirmReceivedExecutor() = 
+   confirm_received_invocation?msg_sender.msg_value -> 
+   confirm_received!msg_sender.msg_value -> 
+   release?exit_code -> 
+   Skip;
+
+ExecutionClient(i) = 
+   (start_execution_client.i -> Skip);
+   (AbortExecutor() [] ConfirmPurchasedExecutor() [] ConfirmReceivedExecutor());
+   (end_execution_client.i -> Skip);
+   ExecutionClient(i);
+
+ConsensusClient(i) = 
+   [counter == i]
+   start_execution_client.i -> 
+   end_execution_client.i -> 
+   tau{counter = (counter + 1) % N} -> 
+   ConsensusClient(i);
+
+BlockchainNode(i) = ExecutionClient(i) || ConsensusClient(i);
+
+BlockchainNetwork() = BlockchainNode(0) || BlockchainNode(1) || BlockchainNode(2);
+
+
+#define non_constant_balances (balances[0] + balances[1] + balances[2] != 0 + INITIAL_BALANCE + INITIAL_BALANCE);
